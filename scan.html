@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>ثبت حضور</title>
+<meta name="robots" content="noindex" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body class="scan-body">
+<script src="js/theme.js"></script>
+<div class="scan-bg"></div>
+<main class="scan-container">
+  <div class="scan-card">
+    <div class="scan-header">
+      <div class="scan-icon">📱</div>
+      <h1>ثبت حضور</h1>
+      <p id="scanClassName" class="scan-class"></p>
+    </div>
+
+    <div id="scanLoading" class="scan-loading">
+      <div class="spinner"></div>
+      <p>در حال بررسی کد...</p>
+    </div>
+
+    <div id="scanError" class="scan-error hidden"></div>
+
+    <form id="scanForm" class="scan-form hidden">
+      <div class="form-group">
+        <label for="firstName">نام</label>
+        <input type="text" id="firstName" placeholder="مثلاً علی" required autocomplete="given-name" />
+      </div>
+      <div class="form-group">
+        <label for="lastName">نام خانوادگی</label>
+        <input type="text" id="lastName" placeholder="مثلاً رضایی" required autocomplete="family-name" />
+      </div>
+      <div class="form-group">
+        <label for="studentNumber">شماره دانشجویی</label>
+        <input type="text" id="studentNumber" placeholder="شماره دانشجویی خود را وارد کنید" required inputmode="numeric" autocomplete="off" />
+      </div>
+      <div aria-hidden="true" style="position:absolute;left:-9999px;opacity:0;height:0;overflow:hidden">
+        <label for="website">website</label>
+        <input type="text" id="website" name="website" tabindex="-1" autocomplete="off" />
+      </div>
+      <button type="submit" id="registerBtn" class="btn-scan">ثبت حضور</button>
+      <p class="scan-hint">هر گوشی فقط یک‌بار می‌تواند در این جلسه ثبت کند.</p>
+    </form>
+
+    <div id="scanSuccess" class="scan-success hidden">
+      <div class="success-circle">✓</div>
+      <h2>حضور ثبت شد</h2>
+      <p id="scanSuccessMsg"></p>
+    </div>
+  </div>
+</main>
+<script src="js/failover.js"></script>
+<script src="js/scan.js"></script>
+</body>
+</html>

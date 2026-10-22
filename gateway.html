@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>در حال اتصال…</title>
+<meta name="robots" content="noindex" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Tahoma, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0b0f1a;
+    color: #e8eef8;
+    padding: 24px;
+  }
+  .box {
+    max-width: 360px;
+    width: 100%;
+    text-align: center;
+    background: rgba(22, 28, 44, 0.95);
+    border: 1px solid rgba(99, 120, 160, 0.3);
+    border-radius: 16px;
+    padding: 28px 20px;
+  }
+  .spinner {
+    width: 40px; height: 40px;
+    border: 3px solid rgba(79,140,255,0.25);
+    border-top-color: #4f8cff;
+    border-radius: 50%;
+    margin: 0 auto 16px;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h1 { font-size: 1.15rem; margin-bottom: 8px; }
+  p { color: #8b9bb8; font-size: 0.9rem; line-height: 1.7; }
+  .err { color: #fb7185; margin-top: 12px; }
+  a.btn {
+    display: inline-block; margin-top: 16px;
+    padding: 10px 18px; border-radius: 10px;
+    background: #4f8cff; color: #fff; text-decoration: none; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div id="spin" class="spinner"></div>
+    <h1 id="title">در حال پیدا کردن سرور…</h1>
+    <p id="msg">لطفاً چند ثانیه صبر کنید.</p>
+    <p id="err" class="err" style="display:none"></p>
+    <a id="retry" class="btn" href="#" style="display:none">تلاش دوباره</a>
+  </div>
+<script src="js/failover.js"></script>
+<script>
+(function () {
+  var hash = (location.hash || '').replace(/^#/, '');
+  var params = new URLSearchParams(hash);
+  var token = params.get('t') || params.get('token') || '';
+  var hostsRaw = params.get('u') || params.get('a') || '';
+  var did = params.get('did') || '';
+
+  var title = document.getElementById('title');
+  var msg = document.getElementById('msg');
+  var errEl = document.getElementById('err');
+  var retry = document.getElementById('retry');
+  var spin = document.getElementById('spin');
+
+  function fail(text) {
+    spin.style.display = 'none';
+    title.textContent = 'اتصال برقرار نشد';
+    msg.textContent = '';
+    errEl.style.display = 'block';
+    errEl.textContent = text;
+    retry.style.display = 'inline-block';
+    retry.onclick = function (e) {
+      e.preventDefault();
+      location.reload();
+    };
+  }
+
+  if (!token || token.length < 8) {
+    fail('کد QR نامعتبر است. لطفاً دوباره اسکن کنید.');
+    return;
+  }
+
+  var F = window.AttFailover;
+  if (!F) {
+    fail('فایل failover بارگذاری نشد.');
+    return;
+  }
+
+  var hosts = F.decodeHosts(hostsRaw);
+  if (!hosts.length) {
+    fail('آدرس سرور در QR نیست. استاد باید تونل را روشن کند.');
+    return;
+  }
+
+  // Build scan URL on THIS origin (GitHub Pages) with token + backend list
+  // so scan.html uses failover against the real backends, not GitHub.
+  var q = 'token=' + encodeURIComponent(token);
+  var h = 'a=' + encodeURIComponent(hostsRaw);
+  if (did) h += '&did=' + encodeURIComponent(did);
+
+  // Quick probe: first host that answers /api/health wins (optional speed-up)
+  var client = F.createClient({
+    origin: null,
+    alternates: hosts,
+    pageProtocol: location.protocol,
+    timeoutMs: 5000,
+    staggerMs: 1200
+  });
+
+  // Override learn so origin:null does not add invalid base
+  // (createClient already skips non-http; origin null is fine)
+
+  client.get('/health').then(function (r) {
+    // Remember sticky base for this phone session via hash
+    var sticky = r.base || hosts[0];
+    var ordered = [sticky].concat(hosts.filter(function (u) { return u !== sticky; }));
+    var encoded = F.encodeHosts(ordered);
+    location.replace('scan.html?' + q + '#' + 'a=' + encodeURIComponent(encoded) + (did ? '&did=' + encodeURIComponent(did) : ''));
+  }).catch(function () {
+    // Even if probe fails, still go to scan — scan.js will retry all hosts
+    location.replace('scan.html?' + q + '#' + h);
+  });
+})();
+</script>
+</body>
+</html>
