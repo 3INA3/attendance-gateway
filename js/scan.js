@@ -2,32 +2,16 @@
   const $ = (sel) => document.querySelector(sel);
   const params = new URLSearchParams(location.search);
   const token = params.get('token');
-  // #a=<backend addresses>&did=<device id from gateway>
+  // #a=<other live addresses>&did=<device id carried over from the gateway / another address>
   const hashParams = new URLSearchParams((location.hash || '').replace(/^#/, ''));
   const F = window.AttFailover;
-
-  // When this page is on GitHub Pages (or any static host), location.origin has NO /api.
-  // Only use hosts from the hash (the real tunnel / LAN backends).
-  const alternates = F ? F.decodeHosts(hashParams.get('a') || '') : [];
-  const isExternalFront =
-    alternates.length > 0 &&
-    !/localhost|127\.0\.0\.1/.test(location.hostname);
-
   const client = F
     ? F.createClient({
-        // On GitHub Pages: do not use location.origin as API base
-        origin: isExternalFront ? null : location.origin,
-        alternates,
+        origin: location.origin,
+        alternates: F.decodeHosts(hashParams.get('a') || ''),
         pageProtocol: location.protocol
       })
     : null;
-
-  // If external and we got a sticky from gateway, prefer first alternate
-  if (client && isExternalFront && alternates.length) {
-    try {
-      client.learn(alternates);
-    } catch (e) {}
-  }
 
   const DEVICE_KEY = 'att_device_id_v2';
   const REG_PREFIX = 'att_reg_session_';
@@ -77,8 +61,12 @@
     $('#scanSuccess').classList.remove('hidden');
   }
 
+  // Persistent unique device ID stored in localStorage (survives reloads & new QR scans)
   function getOrCreateDeviceId() {
     try {
+      // The device id belongs to the PHONE, not to one address: when the phone arrives from the
+      // gateway page (or another address) it brings its id along so the "one phone, one
+      // registration" rule keeps working whichever address answers.
       const carried = hashParams.get('did');
       if (carried && /^dev_[0-9a-f]{48}$/.test(carried)) {
         localStorage.setItem(DEVICE_KEY, carried);
@@ -86,15 +74,54 @@
       }
       let id = localStorage.getItem(DEVICE_KEY);
       if (id && id.length >= 16) return id;
+      // Cryptographically random id
       const bytes = new Uint8Array(24);
       crypto.getRandomValues(bytes);
       id = 'dev_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
       localStorage.setItem(DEVICE_KEY, id);
       return id;
     } catch (e) {
+      // localStorage blocked (rare) — fall back to session-only random (weaker)
       const b = new Uint8Array(16);
       crypto.getRandomValues(b);
       return 'tmp_' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    }
+  }
+
+  // Hardware signals that survive Incognito (no localStorage dependency).
+  // Canvas + WebGL make two identical phone models less likely to collide than UA alone.
+  function canvasFingerprint() {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 240;
+      c.height = 60;
+      const ctx = c.getContext('2d');
+      if (!ctx) return 'nocanvas';
+      ctx.textBaseline = 'top';
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#f60';
+      ctx.fillRect(0, 0, 240, 60);
+      ctx.fillStyle = '#069';
+      ctx.fillText('att-fp-fa-حضور', 4, 8);
+      ctx.fillStyle = 'rgba(0,128,255,0.7)';
+      ctx.fillText('att-fp-fa-حضور', 8, 28);
+      return c.toDataURL().slice(-120);
+    } catch (e) {
+      return 'canvas_err';
+    }
+  }
+
+  function webglFingerprint() {
+    try {
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+      if (!gl) return 'nowebgl';
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+      const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+      return [vendor, renderer, gl.getParameter(gl.VERSION)].join('|');
+    } catch (e) {
+      return 'webgl_err';
     }
   }
 
@@ -102,15 +129,19 @@
     const parts = [
       navigator.userAgent || '',
       navigator.language || '',
+      (navigator.languages || []).join(','),
       navigator.platform || '',
-      String(screen.width) + 'x' + String(screen.height),
+      String(screen.width) + 'x' + String(screen.height) + 'x' + String(screen.availWidth),
       String(screen.colorDepth || ''),
       String(window.devicePixelRatio || 1),
       Intl.DateTimeFormat().resolvedOptions().timeZone || '',
       String(navigator.hardwareConcurrency || ''),
-      String(navigator.maxTouchPoints || '')
+      String(navigator.maxTouchPoints || ''),
+      String(navigator.deviceMemory || ''),
+      canvasFingerprint(),
+      webglFingerprint()
     ];
-    return parts.join('|');
+    return parts.join('||');
   }
 
   async function hashString(str) {
@@ -129,10 +160,11 @@
     return 'h' + h.toString(16) + '_' + str.length;
   }
 
+  // Server-side uniqueness key: HARDWARE ONLY (works across normal + Incognito on same phone).
+  // localStorage id is only for UX (show "already registered" faster in normal browser).
   async function getDeviceFingerprint() {
-    const deviceId = getOrCreateDeviceId();
     const hw = hardwareBits();
-    return await hashString(deviceId + '::' + hw);
+    return await hashString('hw::' + hw);
   }
 
   function markRegisteredLocally(sessionId) {
@@ -187,11 +219,7 @@
       return;
     }
 
-    if (isExternalFront && !alternates.length) {
-      showError('آدرس سرور در لینک نیست. از QR جدید اسکن کنید (استاد باید تونل را روشن کرده باشد).');
-      return;
-    }
-
+    // Ensure device id exists before anything else
     getOrCreateDeviceId();
     const deviceFingerprint = await getDeviceFingerprint();
 
@@ -201,8 +229,9 @@
       );
 
       $('#scanClassName').textContent = data.className;
-      if (client) client.refresh();
+      if (client) client.refresh(); // learn the other live addresses in the background
 
+      // Already registered on this device (server or local)
       if (data.deviceAlreadyUsed || isRegisteredLocally(data.sessionId)) {
         markRegisteredLocally(data.sessionId);
         showSuccess('این گوشی قبلاً برای این جلسه حضور ثبت کرده است. هر گوشی فقط یک‌بار می‌تواند ثبت کند.');
