@@ -2,7 +2,6 @@
   const $ = (sel) => document.querySelector(sel);
   const params = new URLSearchParams(location.search);
   const token = params.get('token');
-  // #a=<other live addresses>&did=<device id carried over from the gateway / another address>
   const hashParams = new URLSearchParams((location.hash || '').replace(/^#/, ''));
   const F = window.AttFailover;
   const client = F
@@ -13,8 +12,8 @@
       })
     : null;
 
-  const DEVICE_KEY = 'att_device_id_v2';
   const REG_PREFIX = 'att_reg_session_';
+  const FP_COOKIE = 'att_hw_fp';
 
   async function api(path, options = {}) {
     let r;
@@ -61,87 +60,40 @@
     $('#scanSuccess').classList.remove('hidden');
   }
 
-  // Persistent unique device ID stored in localStorage (survives reloads & new QR scans)
-  function getOrCreateDeviceId() {
+  function markRegisteredLocally(sessionId) {
     try {
-      // The device id belongs to the PHONE, not to one address: when the phone arrives from the
-      // gateway page (or another address) it brings its id along so the "one phone, one
-      // registration" rule keeps working whichever address answers.
-      const carried = hashParams.get('did');
-      if (carried && /^dev_[0-9a-f]{48}$/.test(carried)) {
-        localStorage.setItem(DEVICE_KEY, carried);
-        return carried;
-      }
-      let id = localStorage.getItem(DEVICE_KEY);
-      if (id && id.length >= 16) return id;
-      // Cryptographically random id
-      const bytes = new Uint8Array(24);
-      crypto.getRandomValues(bytes);
-      id = 'dev_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-      localStorage.setItem(DEVICE_KEY, id);
-      return id;
+      localStorage.setItem(REG_PREFIX + sessionId, '1');
+    } catch (e) {}
+  }
+
+  function isRegisteredLocally(sessionId) {
+    try {
+      return localStorage.getItem(REG_PREFIX + sessionId) === '1';
     } catch (e) {
-      // localStorage blocked (rare) — fall back to session-only random (weaker)
-      const b = new Uint8Array(16);
-      crypto.getRandomValues(b);
-      return 'tmp_' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+      return false;
     }
   }
 
-  // Hardware signals that survive Incognito (no localStorage dependency).
-  // Canvas + WebGL make two identical phone models less likely to collide than UA alone.
-  function canvasFingerprint() {
+  function setFpCookie(fp) {
     try {
-      const c = document.createElement('canvas');
-      c.width = 240;
-      c.height = 60;
-      const ctx = c.getContext('2d');
-      if (!ctx) return 'nocanvas';
-      ctx.textBaseline = 'top';
-      ctx.font = '14px Arial';
-      ctx.fillStyle = '#f60';
-      ctx.fillRect(0, 0, 240, 60);
-      ctx.fillStyle = '#069';
-      ctx.fillText('att-fp-fa-حضور', 4, 8);
-      ctx.fillStyle = 'rgba(0,128,255,0.7)';
-      ctx.fillText('att-fp-fa-حضور', 8, 28);
-      return c.toDataURL().slice(-120);
-    } catch (e) {
-      return 'canvas_err';
-    }
+      const maxAge = 60 * 60 * 24 * 400;
+      document.cookie =
+        FP_COOKIE +
+        '=' +
+        encodeURIComponent(fp) +
+        '; Max-Age=' +
+        maxAge +
+        '; Path=/; SameSite=Lax; Secure';
+    } catch (e) {}
   }
 
-  function webglFingerprint() {
+  function readFpCookie() {
     try {
-      const c = document.createElement('canvas');
-      const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-      if (!gl) return 'nowebgl';
-      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-      const vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
-      const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
-      return [vendor, renderer, gl.getParameter(gl.VERSION)].join('|');
+      const m = document.cookie.match(new RegExp('(?:^|; )' + FP_COOKIE + '=([^;]*)'));
+      return m ? decodeURIComponent(m[1]) : '';
     } catch (e) {
-      return 'webgl_err';
+      return '';
     }
-  }
-
-  function hardwareBits() {
-    const parts = [
-      navigator.userAgent || '',
-      navigator.language || '',
-      (navigator.languages || []).join(','),
-      navigator.platform || '',
-      String(screen.width) + 'x' + String(screen.height) + 'x' + String(screen.availWidth),
-      String(screen.colorDepth || ''),
-      String(window.devicePixelRatio || 1),
-      Intl.DateTimeFormat().resolvedOptions().timeZone || '',
-      String(navigator.hardwareConcurrency || ''),
-      String(navigator.maxTouchPoints || ''),
-      String(navigator.deviceMemory || ''),
-      canvasFingerprint(),
-      webglFingerprint()
-    ];
-    return parts.join('||');
   }
 
   async function hashString(str) {
@@ -160,25 +112,87 @@
     return 'h' + h.toString(16) + '_' + str.length;
   }
 
-  // Server-side uniqueness key: HARDWARE ONLY (works across normal + Incognito on same phone).
-  // localStorage id is only for UX (show "already registered" faster in normal browser).
-  async function getDeviceFingerprint() {
-    const hw = hardwareBits();
-    return await hashString('hw::' + hw);
-  }
-
-  function markRegisteredLocally(sessionId) {
+  function webglStable() {
     try {
-      localStorage.setItem(REG_PREFIX + sessionId, '1');
-    } catch (e) {}
-  }
-
-  function isRegisteredLocally(sessionId) {
-    try {
-      return localStorage.getItem(REG_PREFIX + sessionId) === '1';
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+      if (!gl) return 'nowebgl';
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const vendor = dbg ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || '') : '';
+      const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : '';
+      return vendor + '~' + renderer;
     } catch (e) {
-      return false;
+      return 'webgl_err';
     }
+  }
+
+  async function clientHints() {
+    try {
+      if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+        const v = await navigator.userAgentData.getHighEntropyValues([
+          'architecture',
+          'bitness',
+          'model',
+          'platformVersion',
+          'fullVersionList',
+          'uaFullVersion'
+        ]);
+        return [
+          v.architecture || '',
+          v.bitness || '',
+          v.model || '',
+          v.platformVersion || '',
+          v.uaFullVersion || '',
+          (v.fullVersionList || []).map((x) => x.brand + ':' + x.version).join(',')
+        ].join('|');
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  /**
+   * Fingerprint ONLY from stable hardware signals.
+   * Does NOT use random localStorage ids — so normal Chrome and Incognito
+   * on the SAME phone produce the same value.
+   */
+  async function getDeviceFingerprint() {
+    const hints = await clientHints();
+    const parts = [
+      'v3',
+      navigator.platform || '',
+      String(screen.width),
+      String(screen.height),
+      String(screen.availWidth),
+      String(screen.availHeight),
+      String(screen.colorDepth || ''),
+      String(window.devicePixelRatio || 1),
+      String(navigator.hardwareConcurrency || ''),
+      String(navigator.maxTouchPoints || ''),
+      String(navigator.deviceMemory || ''),
+      Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      (navigator.languages || []).join(','),
+      navigator.language || '',
+      webglStable(),
+      hints,
+      // coarse UA family only (not full UA which can differ slightly)
+      /Android/i.test(navigator.userAgent || '')
+        ? 'android'
+        : /iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+          ? 'ios'
+          : /Windows/i.test(navigator.userAgent || '')
+            ? 'win'
+            : /Mac/i.test(navigator.userAgent || '')
+              ? 'mac'
+              : 'other'
+    ];
+    const fp = await hashString(parts.join('||'));
+    // Prefer cookie if we already set one earlier on this profile (extra glue)
+    const cookieFp = readFpCookie();
+    if (cookieFp && cookieFp.length >= 32) {
+      // If cookie differs from HW, still use HW for server uniqueness across Incognito.
+      // Cookie only helps same-profile fast path.
+    }
+    return fp;
   }
 
   function getDeviceInfo() {
@@ -192,7 +206,6 @@
       model = m ? m[1].trim().split(';')[0] : 'Android';
     } else if (/Windows/.test(ua)) model = 'Windows';
     else if (/Mac OS/.test(ua)) model = 'Mac';
-    else if (/Linux/.test(ua)) model = 'Linux';
     else model = navigator.platform || 'Unknown';
 
     if (/Edg\//.test(ua)) browser = 'Edge';
@@ -219,8 +232,6 @@
       return;
     }
 
-    // Ensure device id exists before anything else
-    getOrCreateDeviceId();
     const deviceFingerprint = await getDeviceFingerprint();
 
     try {
@@ -229,64 +240,71 @@
       );
 
       $('#scanClassName').textContent = data.className;
-      if (client) client.refresh(); // learn the other live addresses in the background
+      if (client) client.refresh();
 
-      // Already registered on this device (server or local)
       if (data.deviceAlreadyUsed || isRegisteredLocally(data.sessionId)) {
         markRegisteredLocally(data.sessionId);
-        showSuccess('این گوشی قبلاً برای این جلسه حضور ثبت کرده است. هر گوشی فقط یک‌بار می‌تواند ثبت کند.');
+        setFpCookie(deviceFingerprint);
+        showSuccess(
+          'این گوشی قبلاً برای این جلسه حضور ثبت کرده است. هر گوشی فقط یک‌بار می‌تواند ثبت کند.'
+        );
         return;
       }
 
       $('#scanLoading').classList.add('hidden');
       $('#scanForm').classList.remove('hidden');
+      window.__attSessionId = data.sessionId;
+      window.__attFp = deviceFingerprint;
     } catch (err) {
-      showError(err.message);
+      showError(err.message || 'خطا در بارگذاری جلسه');
     }
   }
 
-  $('#scanForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const firstName = $('#firstName').value.trim();
-    const lastName = $('#lastName').value.trim();
-    const studentNumber = $('#studentNumber').value.trim();
+  const form = $('#scanForm');
+  if (form) {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $('#registerBtn');
+      const firstName = ($('#firstName') && $('#firstName').value) || '';
+      const lastName = ($('#lastName') && $('#lastName').value) || '';
+      const studentNumber = ($('#studentNumber') && $('#studentNumber').value) || '';
+      const website = ($('#website') && $('#website').value) || '';
 
-    if (!firstName || !lastName || !studentNumber) {
-      alert('لطفاً همه فیلدها را پر کنید');
-      return;
-    }
+      if (btn) btn.disabled = true;
+      try {
+        const deviceFingerprint = window.__attFp || (await getDeviceFingerprint());
+        const deviceInfo = getDeviceInfo();
+        const body = {
+          token,
+          fullName: [firstName.trim(), lastName.trim()].filter(Boolean).join(' '),
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          studentNumber: studentNumber.trim(),
+          deviceFingerprint,
+          deviceInfo,
+          honeypot: '',
+          website
+        };
 
-    const btn = $('#registerBtn');
-    btn.disabled = true;
-    btn.textContent = 'در حال ثبت...';
-
-    try {
-      const deviceFingerprint = await getDeviceFingerprint();
-      const deviceInfo = getDeviceInfo();
-      const websiteEl = document.getElementById('website');
-      const body = {
-        token,
-        firstName,
-        lastName,
-        studentNumber,
-        deviceFingerprint,
-        deviceInfo,
-        website: websiteEl ? websiteEl.value : ''
-      };
-
-      const data = await api('/public/register', { method: 'POST', body });
-      if (data.sessionId) markRegisteredLocally(data.sessionId);
-      showSuccess(`${data.studentName} عزیز، حضور شما با موفقیت ثبت شد.`);
-    } catch (err) {
-      if (err.code === 'ALREADY_REGISTERED' || err.code === 'DEVICE_ALREADY_USED') {
-        showSuccess(err.message);
-      } else {
-        showError(err.message || 'خطا در ثبت');
-        btn.disabled = false;
-        btn.textContent = 'ثبت حضور';
+        const data = await api('/public/register', { method: 'POST', body });
+        if (window.__attSessionId) markRegisteredLocally(window.__attSessionId);
+        setFpCookie(deviceFingerprint);
+        showSuccess(
+          (data.studentName ? data.studentName + ' — ' : '') +
+            'حضور شما ثبت شد.' +
+            (data.status === 'late' ? ' (تأخیر)' : '')
+        );
+      } catch (err) {
+        if (err.code === 'ALREADY_REGISTERED' || err.code === 'DEVICE_ALREADY_USED') {
+          if (window.__attSessionId) markRegisteredLocally(window.__attSessionId);
+          showSuccess(err.message || 'این گوشی یا این شماره قبلاً ثبت شده است.');
+        } else {
+          showError(err.message || 'خطا در ثبت');
+          if (btn) btn.disabled = false;
+        }
       }
-    }
-  });
+    });
+  }
 
   init();
 })();
